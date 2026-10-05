@@ -86,6 +86,8 @@ class Api:
         add("POST", "/api/transfer", self._transfer)
         add("POST", "/api/off-grid", lambda params, body: self._platform.transfer_off_grid())
         add("POST", "/api/discharge", self._discharge)
+        add("POST", "/api/discharge/station", self._discharge_station)
+        add("GET", "/api/discharge/rejections", self._discharge_rejections)
         add("POST", "/api/charge", self._charge)
         add("POST", "/api/balance", self._balance)
         add("POST", "/api/temperature", self._temperature)
@@ -190,7 +192,34 @@ class Api:
         return self._platform.discharge(
             power_kw=_as_float(body, "power_kw", 200.0),
             dt=_as_float(body, "dt", 60.0),
+            frequency_hz=_as_float(body, "frequency_hz", 50.0),
         )
+
+    def _discharge_station(self, params: dict, body: dict) -> dict:
+        raw = body.get("requested", {})
+        if not isinstance(raw, dict):
+            raise StoreError("参数 'requested' 必须是簇号到功率的映射", component="console")
+        try:
+            requested = {str(rack_id): float(kw) for rack_id, kw in raw.items()}
+        except (TypeError, ValueError) as error:
+            raise StoreError("'requested' 中每簇功率必须是数值", component="console") from error
+        raw_priority = body.get("priorities", {})
+        if not isinstance(raw_priority, dict):
+            raise StoreError("参数 'priorities' 必须是簇号到优先级的映射", component="console")
+        try:
+            priorities = {str(rack_id): int(rank) for rack_id, rank in raw_priority.items()}
+        except (TypeError, ValueError) as error:
+            raise StoreError("'priorities' 中每簇优先级必须是整数", component="console") from error
+        return self._platform.discharge_station(
+            requested,
+            dt=_as_float(body, "dt", 60.0),
+            frequency_hz=_as_float(body, "frequency_hz", 50.0),
+            strategy=str(body.get("strategy", "proportional")),
+            priorities=priorities or None,
+        )
+
+    def _discharge_rejections(self, params: dict, body: dict) -> dict:
+        return self._platform.discharge_rejections(limit=_as_int(params, "limit", 20))
 
     def _charge(self, params: dict, body: dict) -> dict:
         return self._platform.charge(

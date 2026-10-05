@@ -26,6 +26,7 @@ from .ns.registry import NamespaceRegistry
 from .ns.topology import Topology, build_default_topology
 from .ops.charge import charge_rack
 from .ops.discharge import discharge_rack
+from .ops.station_discharge import discharge_station
 from .ops.suppression import suppress
 from .ops.transfer import transfer_to_grid
 from .pcs.pcs import Pcs
@@ -178,7 +179,7 @@ class Platform:
                 key: value
                 for key, value in step.get("detail", {}).items()
                 if not isinstance(value, (dict, list))
-                and key not in ("message", "component", "type", "topic", "action")
+                and key not in ("message", "component", "type", "topic", "action", "ts", "station", "op_id", "severity")
             }
             self.bus.publish(
                 Event.of(
@@ -320,8 +321,18 @@ class Platform:
             summary = self._record_operation(op_id, "off_grid", {"ok": not violations, "steps": steps, "violations": violations})
             return {"station": self.station, "ok": not violations, "steps": steps, "violations": violations, **summary}
 
-    def discharge(self, power_kw: float = 200.0, dt: float = 60.0) -> dict:
-        """放电编排：并网限额钳位 → 爬坡 → 电量累计 → 配额记账。"""
+    def discharge(
+        self,
+        power_kw: float = 200.0,
+        dt: float = 60.0,
+        *,
+        frequency_hz: float = 50.0,
+    ) -> dict:
+        """放电编排：并网限额钳位 → 频率窗口校验 → 爬坡 → 电量累计 → 配额记账。
+
+        频率越窗的指令在爬坡之前被拒收，PCS 保持上一个有效功率，拒收
+        证据（含重试可追溯的时间链）留在并网点拒收簿。
+        """
 
         with self._lock:
             op_id = self.ids.next()
@@ -336,9 +347,52 @@ class Platform:
                 power_kw=power_kw,
                 dt=dt,
                 now=self.clock.now(),
+                frequency_hz=frequency_hz,
+                op_id=op_id,
             )
             summary = self._record_operation(op_id, "discharge", report)
             return {**report, **summary}
+
+    def discharge_station(
+        self,
+        requested: dict[str, float],
+        dt: float = 60.0,
+        *,
+        frequency_hz: float = 50.0,
+        strategy: str = "proportional",
+        priorities: dict[str, int] | None = None,
+    ) -> dict:
+        """全站簇群放电：先按限额与策略缩功，再走钳位 → 频率校验 → 爬坡。"""
+
+        with self._lock:
+            op_id = self.ids.next()
+            report = discharge_station(
+                self.pcs,
+                self.grid,
+                self.quota,
+                self.soc,
+                self.racks,
+                self.station,
+                requested=dict(requested),
+                dt=dt,
+                now=self.clock.now(),
+                frequency_hz=frequency_hz,
+                strategy=strategy,
+                priorities=dict(priorities) if priorities else None,
+                op_id=op_id,
+            )
+            summary = self._record_operation(op_id, "station_discharge", report)
+            return {**report, **summary}
+
+    def discharge_rejections(self, limit: int = 20) -> dict:
+        """返回最近的放电拒收证据，供重试前追溯上一次被拒时刻。"""
+
+        with self._lock:
+            return {
+                "total": self.grid.rejections_book.total(),
+                "last": self.grid.last_rejection(),
+                "rejections": self.grid.rejection_history(limit),
+            }
 
     def charge(self, rack_id: str | None = None, steps: int = 3, dt: float = 60.0) -> dict:
         """充电编排：均衡核对 → 温控降额 → 电压核对 → 电流阶梯 → 配额记账。"""

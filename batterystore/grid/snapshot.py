@@ -14,6 +14,7 @@ class GridSnapshot:
     frequency: dict
     checks: int
     rejections: int
+    last_rejection: dict | None
 
     def as_dict(self) -> dict:
         return {
@@ -22,4 +23,5 @@ class GridSnapshot:
             "frequency": dict(self.frequency),
             "checks": self.checks,
             "rejections": self.rejections,
+            "last_rejection": dict(self.last_rejection) if self.last_rejection else None,
         }
