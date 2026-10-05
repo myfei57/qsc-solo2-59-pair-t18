@@ -30,6 +30,17 @@ def _as_int(body: dict, key: str, default: int) -> int:
         raise StoreError(f"参数 {key!r} 必须是整数", component="console") from error
 
 
+def _as_clusters(value: object) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise StoreError("参数 'clusters' 必须是簇功率映射", component="console")
+    try:
+        return {str(rack_id): float(power_kw) for rack_id, power_kw in value.items()}
+    except (TypeError, ValueError) as error:
+        raise StoreError("参数 'clusters' 必须是簇功率映射", component="console") from error
+
+
 class Api:
     """把 HTTP 请求翻译成平台调用。"""
 
@@ -187,9 +198,13 @@ class Api:
         )
 
     def _discharge(self, params: dict, body: dict) -> dict:
+        clusters = _as_clusters(body.get("clusters"))
+        power_kw = sum(clusters.values()) if clusters else _as_float(body, "power_kw", 200.0)
         return self._platform.discharge(
-            power_kw=_as_float(body, "power_kw", 200.0),
+            power_kw=power_kw,
             dt=_as_float(body, "dt", 60.0),
+            frequency_hz=_as_float(body, "frequency_hz", 50.0),
+            clusters=clusters,
         )
 
     def _charge(self, params: dict, body: dict) -> dict:

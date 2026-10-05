@@ -14,12 +14,16 @@ class GridSnapshot:
     frequency: dict
     checks: int
     rejections: int
+    last_rejection: dict | None = None
 
     def as_dict(self) -> dict:
-        return {
+        payload = {
             "limit": dict(self.limit),
             "flow": dict(self.flow),
             "frequency": dict(self.frequency),
             "checks": self.checks,
             "rejections": self.rejections,
         }
+        if self.last_rejection is not None:
+            payload["last_rejection"] = dict(self.last_rejection)
+        return payload

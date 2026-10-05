@@ -67,6 +67,11 @@ class Pcs:
 
         return self._state.is_tied()
 
+    def current_power_kw(self) -> float:
+        """返回当前实际保持的功率；频率拒收时不应改变该值。"""
+
+        return self._ramp.current()
+
     def transfer(self, target: str, reason: str) -> dict:
         """执行一次并离网切换，返回切换记录。"""
 

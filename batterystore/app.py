@@ -140,7 +140,18 @@ class Platform:
     def _restore(self) -> None:
         """从落盘状态恢复平台计数，保证重启后计数连续。"""
 
-        tail = self.audit.replay_from_journal(limit=1)
+        records = self.audit.replay_from_journal()
+        for raw in records:
+            entry = AuditRecord.from_dict(raw)
+            if entry.component == "grid":
+                gate = entry.payload
+                rejected = gate.get("rejected") is True
+                if entry.action == "tie_check":
+                    gate = gate.get("frequency_gate", {})
+                    rejected = gate.get("rejected") is True
+                if entry.action in ("frequency_gate", "tie_check") and rejected:
+                    self.grid.record_frequency_rejection(gate)
+        tail = records[-1:]
         if tail:
             self._last_audit_ts = AuditRecord.from_dict(tail[-1]).ts
         state = self.store.read("platform_state")
@@ -177,9 +188,9 @@ class Platform:
             detail = {
                 key: value
                 for key, value in step.get("detail", {}).items()
-                if not isinstance(value, (dict, list))
-                and key not in ("message", "component", "type", "topic", "action")
+                if key not in ("message", "component", "type", "topic", "action")
             }
+            severity = "alarm" if step.get("detail", {}).get("rejected") is True else "notice"
             self.bus.publish(
                 Event.of(
                     step["component"],
@@ -187,7 +198,7 @@ class Platform:
                     step["action"],
                     station=self.station,
                     op_id=op_id,
-                    severity="notice",
+                    severity=severity,
                     **detail,
                 )
             )
@@ -320,8 +331,14 @@ class Platform:
             summary = self._record_operation(op_id, "off_grid", {"ok": not violations, "steps": steps, "violations": violations})
             return {"station": self.station, "ok": not violations, "steps": steps, "violations": violations, **summary}
 
-    def discharge(self, power_kw: float = 200.0, dt: float = 60.0) -> dict:
-        """放电编排：并网限额钳位 → 爬坡 → 电量累计 → 配额记账。"""
+    def discharge(
+        self,
+        power_kw: float = 200.0,
+        dt: float = 60.0,
+        frequency_hz: float = 50.0,
+        clusters: dict[str, float] | None = None,
+    ) -> dict:
+        """放电编排：并网限额钳位 → 频率窗口校验 → 爬坡 → 电量累计 → 配额记账。"""
 
         with self._lock:
             op_id = self.ids.next()
@@ -336,6 +353,8 @@ class Platform:
                 power_kw=power_kw,
                 dt=dt,
                 now=self.clock.now(),
+                frequency_hz=frequency_hz,
+                clusters=clusters,
             )
             summary = self._record_operation(op_id, "discharge", report)
             return {**report, **summary}
